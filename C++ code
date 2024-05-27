@@ -1,0 +1,141 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <chrono>
+#include <thread>
+#include <sstream>
+#include <vector>
+#include <iomanip>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+#include <sys/statvfs.h>
+
+// Function to get CPU usage
+double getCpuUsage() {
+    std::ifstream file("/proc/stat");
+    std::string line;
+    std::getline(file, line);
+    std::istringstream ss(line);
+    std::string cpu;
+    long user, nice, system, idle;
+    ss >> cpu >> user >> nice >> system >> idle;
+    static long prevUser = 0, prevNice = 0, prevSystem = 0, prevIdle = 0;
+    long total = (user + nice + system + idle) - (prevUser + prevNice + prevSystem + prevIdle);
+    long idleTime = idle - prevIdle;
+    prevUser = user;
+    prevNice = nice;
+    prevSystem = system;
+    prevIdle = idle;
+    return (total - idleTime) * 100.0 / total;
+}
+
+// Function to get memory usage
+double getMemoryUsage() {
+    struct sysinfo memInfo;
+    sysinfo(&memInfo);
+    long long totalVirtualMem = memInfo.totalram;
+    totalVirtualMem += memInfo.totalswap;
+    totalVirtualMem *= memInfo.mem_unit;
+    long long virtualMemUsed = memInfo.totalram - memInfo.freeram;
+    virtualMemUsed += memInfo.totalswap - memInfo.freeswap;
+    virtualMemUsed *= memInfo.mem_unit;
+    return virtualMemUsed * 100.0 / totalVirtualMem;
+}
+
+// Function to get detailed memory usage
+void getDetailedMemoryUsage(std::ostream& os) {
+    struct sysinfo memInfo;
+    sysinfo(&memInfo);
+    long long totalPhysMem = memInfo.totalram * memInfo.mem_unit;
+    long long freePhysMem = memInfo.freeram * memInfo.mem_unit;
+    long long totalSwap = memInfo.totalswap * memInfo.mem_unit;
+    long long freeSwap = memInfo.freeswap * memInfo.mem_unit;
+
+    os << "Total Physical Memory: " << totalPhysMem / (1024 * 1024) << " MB, "
+       << "Free Physical Memory: " << freePhysMem / (1024 * 1024) << " MB, "
+       << "Total Swap: " << totalSwap / (1024 * 1024) << " MB, "
+       << "Free Swap: " << freeSwap / (1024 * 1024) << " MB";
+}
+
+// Function to get disk usage
+double getDiskUsage(const char* path = "/") {
+    struct statvfs stat;
+    if (statvfs(path, &stat) != 0) {
+        return -1; // Error
+    }
+    return (stat.f_blocks - stat.f_bfree) * 100.0 / stat.f_blocks;
+}
+
+// Function to get network usage
+void getNetworkUsage(std::ostream& os) {
+    static long long prevRxBytes = 0, prevTxBytes = 0;
+    long long rxBytes = 0, txBytes = 0;
+    std::ifstream file("/proc/net/dev");
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (line.find(":") != std::string::npos) {
+            std::istringstream ss(line);
+            std::string iface;
+            ss >> iface;
+            iface.pop_back(); // Remove trailing ':'
+            long long rx, tx;
+            ss >> rx >> std::ws;
+            for (int i = 0; i < 7; ++i) ss >> std::ws; // Skip other fields
+            ss >> tx;
+            rxBytes += rx;
+            txBytes += tx;
+        }
+    }
+
+    long long rxDelta = rxBytes - prevRxBytes;
+    long long txDelta = txBytes - prevTxBytes;
+    prevRxBytes = rxBytes;
+    prevTxBytes = txBytes;
+
+    os << "Network Usage - RX: " << rxDelta / 1024 << " KB/s, TX: " << txDelta / 1024 << " KB/s";
+}
+
+// Function to get CPU temperature
+double getCpuTemperature() {
+    std::ifstream file("/sys/class/thermal/thermal_zone0/temp");
+    double temperature;
+    if (file >> temperature) {
+        return temperature / 1000.0;
+    }
+    return -1.0; // Error
+}
+
+int main() {
+    std::ofstream logFile("system_monitor_log.txt");
+    if (!logFile.is_open()) {
+        std::cerr << "Unable to open log file." << std::endl;
+        return 1;
+    }
+    
+    while (true) {
+        double cpuUsage = getCpuUsage();
+        double memoryUsage = getMemoryUsage();
+        double diskUsage = getDiskUsage();
+        double cpuTemperature = getCpuTemperature();
+
+        auto now = std::chrono::system_clock::now();
+        auto now_time_t = std::chrono::system_clock::to_time_t(now);
+        logFile << std::put_time(std::localtime(&now_time_t), "%Y-%m-%d %H:%M:%S")
+                << " CPU Usage: " << std::fixed << std::setprecision(2) << cpuUsage << "%"
+                << " Memory Usage: " << std::fixed << std::setprecision(2) << memoryUsage << "%"
+                << " Disk Usage: " << std::fixed << std::setprecision(2) << diskUsage << "%"
+                << " CPU Temperature: " << std::fixed << std::setprecision(2) << cpuTemperature << "°C, ";
+        
+        getDetailedMemoryUsage(logFile);
+        logFile << ", ";
+        getNetworkUsage(logFile);
+        logFile << std::endl;
+
+        logFile.flush();
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+
+    logFile.close();
+    return 0;
+}
